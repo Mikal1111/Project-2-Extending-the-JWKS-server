@@ -1,3 +1,4 @@
+# Import necessary libraries
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -8,21 +9,26 @@ import jwt
 import datetime
 import sqlite3
 
+
+# Define host and port
 hostName = "localhost"
 serverPort = 8080
 
-# Create SQLite database
+
+# Create SQLite database connection and cursor
 conn = sqlite3.connect('totally_not_my_privateKeys.db')
 cursor = conn.cursor()
 
-# Table schema/ create keys table if not exists
+
+# Create keys table if not exists
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS keys(
         kid INTEGER PRIMARY KEY AUTOINCREMENT,
-        key BLOB NOT NULL,
+        key TEXT NOT NULL,
         exp INTEGER NOT NULL
     )
 ''')
+
 
 # Function to generate RSA private key
 def generate_private_key():
@@ -31,25 +37,29 @@ def generate_private_key():
         key_size=2048,
     )
 
+
 # Function to serialize private key
 def serialize(private_key):
     return private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.TraditionalOpenSSL,
         encryption_algorithm=serialization.NoEncryption()
-    )
+    ).decode()
+
 
 # Function to deserialize private key
 def deserialize(serialized_key):
-    return serialization.load_pem_private_key(serialized_key, password=None)
+    return serialization.load_pem_private_key(serialized_key.encode(), password=None)
 
-# Function to store private key in db
+
+# Function to store private key in database
 def save_private_key(private_key, exp):
     serialized_key = serialize(private_key)
     cursor.execute("INSERT INTO keys (key, exp) VALUES (?, ?)", (serialized_key, exp))
     conn.commit()
 
-# Function to read private keys from the db
+
+# Function to read private keys from the database
 def get_private_keys():
     cursor.execute("SELECT key FROM keys WHERE exp >= ?", (int(datetime.datetime.utcnow().timestamp()),))
     rows = cursor.fetchall()
@@ -59,7 +69,8 @@ def get_private_keys():
         private_keys.append(private_key)
     return private_keys
 
-# Function to convert rsa public key to base64url
+
+# Function to convert RSA public key to base64url
 def rsa_public_key(public_key):
     numbers = public_key.public_numbers()
     return {
@@ -71,14 +82,12 @@ def rsa_public_key(public_key):
         "e": int_to_base64(numbers.e)
     }
 
+
 # Function to convert int number to base64url
 def int_to_base64(value):
-    value_hex = format(value, 'x')
-    if len(value_hex) % 2 == 1:
-        value_hex = '0' + value_hex
-    value_bytes = bytes.fromhex(value_hex)
-    encoded = base64.urlsafe_b64encode(value_bytes).rstrip(b'=')
-    return encoded.decode('utf-8')
+    value_bytes = value.to_bytes((value.bit_length() + 7) // 8, 'big')
+    return base64.urlsafe_b64encode(value_bytes).decode('utf-8').rstrip('=')
+
 
 class MyServer(BaseHTTPRequestHandler):
     def do_PUT(self):
@@ -112,29 +121,16 @@ class MyServer(BaseHTTPRequestHandler):
                 "user": "username",
                 "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
             }
-            if 'expired' in params:
-                headers["kid"] = "expiredKID"
-                private_keys = get_private_keys()
-                if private_keys:
-                    encoded_jwt = jwt.encode(token_payload, serialize(private_keys[0]), algorithm="RS256", headers=headers)
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(bytes(encoded_jwt, "utf-8"))
-                else:
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(bytes("No valid private key found", "utf-8"))
+            private_keys = get_private_keys()
+            if private_keys:
+                encoded_jwt = jwt.encode(token_payload, serialize(private_keys[0]), algorithm="RS256", headers=headers)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(bytes(encoded_jwt, "utf-8"))
             else:
-                private_keys = get_private_keys()
-                if private_keys:
-                    encoded_jwt = jwt.encode(token_payload, serialize(private_keys[0]), algorithm="RS256", headers=headers)
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(bytes(encoded_jwt, "utf-8"))
-                else:
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(bytes("No valid private key found", "utf-8"))
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(bytes("No valid private key found", "utf-8"))
             return
 
         self.send_response(405)
@@ -157,6 +153,7 @@ class MyServer(BaseHTTPRequestHandler):
         self.end_headers()
         return
 
+
 if __name__ == "__main__":
     webServer = HTTPServer((hostName, serverPort), MyServer)
     try:
@@ -165,5 +162,3 @@ if __name__ == "__main__":
         pass
 
     webServer.server_close()
-
-
